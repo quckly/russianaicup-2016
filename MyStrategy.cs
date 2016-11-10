@@ -8,12 +8,58 @@ using Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk.Model;
 
 namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
     public sealed class MyStrategy : IStrategy {
-        public void Move(Wizard self, World world, Game game, Move move) {
-            move.Speed = game.WizardForwardSpeed;
-            move.StrafeSpeed = game.WizardStrafeSpeed;
-            move.Turn = game.WizardMaxTurnAngle;
-            move.Action = ActionType.MagicMissile;
+
+        // Global variables
+
+
+        // For one move variables
+        Wizard self; World world; Game game; Move move;
+        private List<Task> moveTasks;
+
+        public void CalculateNextMovement()
+        {
+
         }
+
+        private void ApplyNextMovement()
+        {
+            var bestTask = moveTasks
+                .OrderBy(task => task.Cost)
+                .FirstOrDefault();
+
+            if (bestTask == null) // This is not be true never
+            {
+                move.Action = ActionType.Staff;
+                return;
+            }
+
+            move = bestTask.Movement;
+        }
+
+        public void Move(Wizard self, World world, Game game, Move move)
+        {
+            InitMove(self, world, game, move);
+
+            CalculateNextMovement();
+
+            ApplyNextMovement();
+        }
+
+        void InitMove(Wizard self, World world, Game game, Move move)
+        {
+            this.self = self;
+            this.world = world;
+            this.game = game;
+            this.move = move;
+
+            moveTasks = new List<Task>();
+        }
+    }
+
+    public class Task
+    {
+        public Move Movement { get; }
+        public double Cost { get; }
     }
 
     public class QMath
