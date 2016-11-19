@@ -47,7 +47,11 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
                     remoteProcessClient.WriteMovesMessage(moves);
                 }
-            } finally {
+            }
+            catch (System.IO.IOException)
+            {
+            }
+            finally {
                 remoteProcessClient.Close();
             }
         }

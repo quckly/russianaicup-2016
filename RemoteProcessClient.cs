@@ -17,9 +17,34 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         private Tree[] previousTrees;
 
         public RemoteProcessClient(string host, int port) {
-            client = new TcpClient(host, port) {
-                SendBufferSize = BufferSizeBytes, ReceiveBufferSize = BufferSizeBytes, NoDelay = true
-            };
+            client = null;
+
+            bool localRunnerStarted = false;
+
+            while (client == null)
+            {
+                try
+                {
+                    client = new TcpClient(host, port)
+                    {
+                        SendBufferSize = BufferSizeBytes,
+                        ReceiveBufferSize = BufferSizeBytes,
+                        NoDelay = true
+                    };
+                }
+                catch
+                {
+                    if (!localRunnerStarted)
+                    {
+                        localRunnerStarted = true;
+
+                        System.Diagnostics.Process.Start(@"..\..\local-runner\local-runner-vs.bat");
+                        //System.Diagnostics.Process.Start("javaw -jar \"..\\..\\local-runner\\local-runner.jar\" ..\\..\\local-runner\\local-runner.properties");
+                    }
+                }
+
+                System.Threading.Thread.Sleep(0);
+            }
 
             reader = new BinaryReader(client.GetStream());
             writer = new BinaryWriter(client.GetStream());
