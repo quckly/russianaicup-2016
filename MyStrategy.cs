@@ -40,11 +40,11 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 path = physic.FindPathTo(NextPoint);
             }
 
-            var target = physic.GetPointFromCell(path.Reverse().ToArray()[1].LastStep.Vec);
+            var target = physic.GetPointFromCellLocal(path.Reverse().ToArray()[1].LastStep.Vec);
 
             foreach (var ppp in path.Reverse())
             {
-                var pp = physic.GetPointFromCell(ppp.LastStep.Vec);
+                var pp = physic.GetPointFromCellLocal(ppp.LastStep.Vec);
                 vc.FillCircle(pp.X, pp.Y, 4.0f, 0, 0, 1);
             }
 
@@ -62,8 +62,9 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         private void SetRunToPoint(Move move, VectorD target)
         {
             var vectorToTarget = (target - new VectorD(self));
+            var vectorToTargetLength = vectorToTarget.Length;
 
-            if (vectorToTarget.SqLength < 4)
+            if (vectorToTargetLength < 2)
             {
                 move.Speed = move.StrafeSpeed = 0;
                 return;
@@ -75,6 +76,13 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             double coof = new VectorD(vect.X / 4.0, vect.Y / 3.0).Length;
             vect *= 1.0 / coof;
+
+            // Clamp speed vector
+            var vectLen = vect.Length;
+            if (vectLen > vectorToTargetLength)
+            {
+                vect = vect.Normalize * vectorToTargetLength;
+            }
 
             move.StrafeSpeed = vect.Y;
             move.Speed = vect.X;
@@ -138,12 +146,12 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         private void DrawCells()
         {
-            for (int i = 0; i < physic.CellGridCount; i++)
+            for (int i = 0; i < physic.LocalCellGridCount; i++)
             {
-                for (int j = 0; j < physic.CellGridCount; j++)
+                for (int j = 0; j < physic.LocalCellGridCount; j++)
                 {
-                    var coords = new VectorD(i * physic.CellGridWidth + physic.CellGridWidth / 2, j * physic.CellGridWidth + physic.CellGridWidth / 2);
-                    var free = physic.cells[i, j];//physic.IsFreeCell(new Vector(i, j));
+                    var coords = new VectorD(i * physic.LocalCellGridWidth + physic.LocalCellGridWidth / 2, j * physic.LocalCellGridWidth + physic.LocalCellGridWidth / 2);
+                    var free = physic.cellsLocal[i, j];//physic.IsFreeCell(new Vector(i, j));
 
                     if (free == Physic.CellStatus.Free)
                         vc.FillCircle(coords.X, coords.Y, 2.0f, 0, 1, 0);
@@ -179,7 +187,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         private void EndDebug()
         {
             // Draw smth
-            DrawCells();
+            //DrawCells();
 
             vc.EndPost();
         }
@@ -195,7 +203,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         public readonly int ClusterGridWidth = 100;
         public int ClusterGridCount { get; private set; }
 
-        private List<CircularUnit>[,] clusters;
+        private List<CircularUnit>[,] clustersGlobals;
+        private List<CircularUnit>[,] clustersLocals;
 
         public static readonly Vector[] neighboursVectors = {new Vector(-1, -1), new Vector(0, -1), new Vector(1, -1), new Vector(-1, 0), new Vector(1, 0), new Vector(-1, 1), new Vector(0, 1), new Vector(1,1) };
         public static readonly Vector[] neisAndMeClusters = neighboursVectors.Union(new[] {new Vector(0, 0)}).ToArray();
@@ -204,12 +213,16 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         // Cells
         // {1,2,4,5,8,10,16,20,25,32,40,50,80,100,125,160,200,250,400,500,800,1000,2000,4000}
-        public readonly int CellGridWidth = 20;
-        public int CellGridCount { get; private set; }
+        public readonly int GlobalCellGridWidth = 100;
+        public int GlobalCellGridCount { get; private set; }
+
+        public readonly int LocalCellGridWidth = 10;
+        public int LocalCellGridCount { get; private set; }
 
         private double wizardRadius, wizardRadiusSq;
 
-        public CellStatus[,] cells;
+        public CellStatus[,] cellsGlobal;
+        public CellStatus[,] cellsLocal;
 
         // Nodes
         // ... empty
@@ -237,86 +250,162 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         {
             ClusterGridCount = (int)Math.Ceiling(game.MapSize / ClusterGridWidth);
 
-            clusters = new List<CircularUnit>[ClusterGridCount, ClusterGridCount];
+            // Globals
+            clustersGlobals = new List<CircularUnit>[ClusterGridCount, ClusterGridCount];
             for (int i = 0; i < ClusterGridCount; i++)
             {
                 for (int j = 0; j < ClusterGridCount; j++)
                 {
-                    clusters[i, j] = new List<CircularUnit>();
+                    clustersGlobals[i, j] = new List<CircularUnit>();
                 }
             }
 
             // Fill
-            AddUnitsToClusters(world.Buildings);
-            AddUnitsToClusters(world.Minions);
-            AddUnitsToClusters(world.Trees);
-            AddUnitsToClusters(world.Wizards.Where(wizard => !wizard.IsMe));
+            AddUnitsToClustersGlobal(world.Trees);
+
+            // Locals
+            clustersLocals = new List<CircularUnit>[ClusterGridCount, ClusterGridCount];
+            for (int i = 0; i < ClusterGridCount; i++)
+            {
+                for (int j = 0; j < ClusterGridCount; j++)
+                {
+                    clustersLocals[i, j] = new List<CircularUnit>();
+                }
+            }
+
+            // Fill
+            AddUnitsToClustersLocal(world.Buildings);
+            AddUnitsToClustersLocal(world.Minions);
+            AddUnitsToClustersLocal(world.Trees);
+            AddUnitsToClustersLocal(world.Wizards.Where(wizard => !wizard.IsMe));
 
             basesBuildings = world.Buildings.Where(b => b.Type == BuildingType.FactionBase).ToArray();
         }
 
         private void GenerateCells()
         {
-            CellGridCount = (int)Math.Ceiling(game.MapSize / CellGridWidth);
+            // Global
+            GlobalCellGridCount = (int)Math.Ceiling(game.MapSize / GlobalCellGridWidth);
 
-            cells = new CellStatus[CellGridCount,CellGridCount];
+            cellsGlobal = new CellStatus[GlobalCellGridCount,GlobalCellGridCount];
+
+            // Local
+            LocalCellGridCount = (int)Math.Ceiling(game.MapSize / LocalCellGridWidth);
+            cellsLocal = new CellStatus[LocalCellGridCount, LocalCellGridCount];
         }
 
-        private void AddUnitsToClusters(IEnumerable<CircularUnit> units)
+        private void AddUnitsToClustersGlobal(IEnumerable<CircularUnit> units)
         {
             foreach (var unit in units)
             {
                 var p = GetCluster(unit);
-                clusters[p.X, p.Y].Add(unit);
+                clustersGlobals[p.X, p.Y].Add(unit);
+            }
+        }
+
+        private void AddUnitsToClustersLocal(IEnumerable<CircularUnit> units)
+        {
+            foreach (var unit in units)
+            {
+                var p = GetCluster(unit);
+                clustersLocals[p.X, p.Y].Add(unit);
             }
         }
 
         public Path<QNode> FindPathTo(VectorD end)
         {
-            return FindPath(GetCell(self), GetCell(end));
+            return FindPath(new VectorD(self), end);
         }
 
         public Path<QNode> FindPath(VectorD start, VectorD end)
         {
-            return FindPath(GetCell(start), GetCell(end));
-        }
+            var startNodeGlobal = GetNodeGlobal(GetCellGlobal(start));
+            var endNodeGlobal = GetNodeGlobal(GetCellGlobal(end));
 
-        public Path<QNode> FindPath(Vector start, Vector end)
-        {
-            var startNode = GetNode(start);
-            var endNode = GetNode(end);
+            Path<QNode> shortestPathGlobal = AStar.FindPath(startNodeGlobal, endNodeGlobal,
+                (node1, node2) => (node2.Vec - node1.Vec).Length,
+                node => (endNodeGlobal.Vec - node.Vec).Length);
 
-            Path<QNode> shortestPath = AStar.FindPath(startNode, endNode, 
-                (node1, node2) => (node2.Vec - node1.Vec).Length, 
-                node => (endNode.Vec - node.Vec).Length,
-                20);
-
-            return shortestPath;
-        }
-
-        public QNode GetNode(Vector cell)
-        {
-            return new QNode(cell, this, null);
-        }
-
-        public bool IsFreeCell(VectorD coord)
-        {
-            return IsFreeCell(GetCell(coord));
-        }
-
-        public bool IsFreeCell(Vector cell)
-        {
-            if (cells[cell.X, cell.Y] == CellStatus.Unknown)
+            if (shortestPathGlobal == null)
             {
-                cells[cell.X, cell.Y] = CalculateCellStatus(cell);
+                return null;
             }
 
-            return cells[cell.X, cell.Y] == CellStatus.Free;
+            var glPath = shortestPathGlobal.Reverse().ToArray();
+            VectorD nextLocalEndpoint = end;
+
+            foreach (var ppp in glPath)
+            {
+                var pp = GetPointFromCellGlobal(ppp.LastStep.Vec);
+                MyStrategy.vc.FillCircle(pp.X, pp.Y, 4.0f, 1, 0, 1);
+            }
+
+            if (glPath.Length >= 2)
+            {
+                for (int i = 2; i <= 5 && i < glPath.Length; i++)
+                {
+                    nextLocalEndpoint = GetPointFromCellGlobal(glPath[i].LastStep.Vec);
+
+                    if (IsFreeCellLocal(nextLocalEndpoint))
+                        break;
+                }
+            }
+
+            if (!IsFreeCellLocal(nextLocalEndpoint))
+                return null;
+
+            var startNodeLocal = GetNodeLocal(GetCellLocal(start));
+            var endNodeLocal = GetNodeLocal(GetCellLocal(nextLocalEndpoint));
+
+            var shortestPathLocal = AStar.FindPath(startNodeLocal, endNodeLocal,
+                (node1, node2) => (node2.Vec - node1.Vec).Length,
+                node => (endNodeLocal.Vec - node.Vec).Length);
+
+            return shortestPathLocal;
+
+            //return FindPath(GetCellGlobal(start), GetCellGlobal(end));
         }
 
-        public CellStatus CalculateCellStatus(Vector cell)
+        //public Path<QNode> FindPath(Vector start, Vector end)
+        //{
+        //    var startNode = GetNode(start);
+        //    var endNode = GetNode(end);
+
+        //    Path<QNode> shortestPath = AStar.FindPath(startNode, endNode, 
+        //        (node1, node2) => (node2.Vec - node1.Vec).Length, 
+        //        node => (endNode.Vec - node.Vec).Length);
+
+        //    return shortestPath;
+        //}
+
+        public QNode GetNodeGlobal(Vector cell)
         {
-            var coords = GetPointFromCell(cell);
+            return new QNodeGlobal(cell, this, null);
+        }
+
+        public QNode GetNodeLocal(Vector cell)
+        {
+            return new QNodeLocal(cell, this, null);
+        }
+
+        public bool IsFreeCellGlobal(VectorD coord)
+        {
+            return IsFreeCellGlobal(GetCellGlobal(coord));
+        }
+
+        public bool IsFreeCellGlobal(Vector cell)
+        {
+            if (cellsGlobal[cell.X, cell.Y] == CellStatus.Unknown)
+            {
+                cellsGlobal[cell.X, cell.Y] = CalculateCellStatusGlobal(cell);
+            }
+
+            return cellsGlobal[cell.X, cell.Y] == CellStatus.Free;
+        }
+
+        public CellStatus CalculateCellStatusGlobal(Vector cell)
+        {
+            var coords = GetPointFromCellGlobal(cell);
 
             var centralCluster = GetCluster(coords);
 
@@ -327,9 +416,50 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 if (cl.X < 0 || cl.Y < 0 || cl.X >= ClusterGridCount || cl.Y >= ClusterGridCount)
                     continue;
 
-                foreach (var unit in clusters[cl.X, cl.Y])
+                foreach (var unit in clustersGlobals[cl.X, cl.Y])
                 {
                     var unitPointRadius = (wizardRadius + unit.Radius);
+                    if (SquareDistance(unit, coords) <= unitPointRadius * unitPointRadius)
+                    {
+                        return CellStatus.Busy;
+                    }
+                }
+            }
+
+            return CellStatus.Free;
+        }
+
+        public bool IsFreeCellLocal(VectorD coord)
+        {
+            return IsFreeCellLocal(GetCellLocal(coord));
+        }
+
+        public bool IsFreeCellLocal(Vector cell)
+        {
+            if (cellsLocal[cell.X, cell.Y] == CellStatus.Unknown)
+            {
+                cellsLocal[cell.X, cell.Y] = CalculateCellStatusLocal(cell);
+            }
+
+            return cellsLocal[cell.X, cell.Y] == CellStatus.Free;
+        }
+
+        public CellStatus CalculateCellStatusLocal(Vector cell)
+        {
+            var coords = GetPointFromCellLocal(cell);
+
+            var centralCluster = GetCluster(coords);
+
+            foreach (var neigh in neisAndMeClusters)
+            {
+                var cl = (centralCluster + neigh);
+
+                if (cl.X < 0 || cl.Y < 0 || cl.X >= ClusterGridCount || cl.Y >= ClusterGridCount)
+                    continue;
+
+                foreach (var unit in clustersLocals[cl.X, cl.Y])
+                {
+                    var unitPointRadius = (wizardRadius + unit.Radius + 4.0);
                     if (SquareDistance(unit, coords) <= unitPointRadius * unitPointRadius)
                     {
                         return CellStatus.Busy;
@@ -338,7 +468,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
                 foreach (var building in basesBuildings)
                 {
-                    var unitPointRadius = (wizardRadius + building.Radius);
+                    var unitPointRadius = (wizardRadius + building.Radius + 4.0);
                     if (SquareDistance(building, coords) <= unitPointRadius * unitPointRadius)
                     {
                         return CellStatus.Busy;
@@ -359,19 +489,34 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             return new Vector((int)Math.Floor(coord.X / ClusterGridWidth), (int)Math.Floor(coord.Y / ClusterGridWidth));
         }
 
-        public Vector GetCell(Unit unit)
+        public Vector GetCellGlobal(Unit unit)
         {
-            return new Vector((int)Math.Floor(unit.X / CellGridWidth), (int)Math.Floor(unit.Y / CellGridWidth));
+            return new Vector((int)Math.Floor(unit.X / GlobalCellGridWidth), (int)Math.Floor(unit.Y / GlobalCellGridWidth));
         }
 
-        public Vector GetCell(VectorD coord)
+        public Vector GetCellGlobal(VectorD coord)
         {
-            return new Vector((int)Math.Floor(coord.X / CellGridWidth), (int)Math.Floor(coord.Y / CellGridWidth));
+            return new Vector((int)Math.Floor(coord.X / GlobalCellGridWidth), (int)Math.Floor(coord.Y / GlobalCellGridWidth));
+        }
+        
+        public Vector GetCellLocal(Unit unit)
+        {
+            return new Vector((int)Math.Floor(unit.X / LocalCellGridWidth), (int)Math.Floor(unit.Y / LocalCellGridWidth));
         }
 
-        public VectorD GetPointFromCell(Vector cell)
+        public Vector GetCellLocal(VectorD coord)
         {
-            return new VectorD(cell.X * CellGridWidth + CellGridWidth / 2, cell.Y * CellGridWidth + CellGridWidth / 2);
+            return new Vector((int)Math.Floor(coord.X / LocalCellGridWidth), (int)Math.Floor(coord.Y / LocalCellGridWidth));
+        }
+
+        public VectorD GetPointFromCellGlobal(Vector cell)
+        {
+            return new VectorD(cell.X * GlobalCellGridWidth + GlobalCellGridWidth / 2, cell.Y * GlobalCellGridWidth + GlobalCellGridWidth / 2);
+        }
+
+        public VectorD GetPointFromCellLocal(Vector cell)
+        {
+            return new VectorD(cell.X * LocalCellGridWidth + LocalCellGridWidth / 2, cell.Y * LocalCellGridWidth + LocalCellGridWidth / 2);
         }
 
         public double SquareDistance(Unit unit1, Unit unit2)
@@ -397,7 +542,67 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         public List<TNode> Nodes { get; set; } = new List<TNode>();
     }
 
-    public class QNode : IHasNeighbours<QNode>, IEquatable<QNode>
+    public class QNodeLocal : QNode
+    {
+        public QNodeLocal(Vector vec, Physic physic, IEnumerable<QNode> neighbours)
+            : base(vec, physic, neighbours)
+        {
+        }
+
+        public override IEnumerable<QNode> CalculateNeighbours()
+        {
+            var centralCell = Vec;
+
+            List<QNode> neighbours = new List<QNode>();
+
+            foreach (var neighbour in Physic.neighboursVectors)
+            {
+                var considerCell = (centralCell + neighbour);
+
+                if (considerCell.X < 0 || considerCell.Y < 0 || considerCell.X >= Ph.LocalCellGridCount || considerCell.Y >= Ph.LocalCellGridCount)
+                    continue;
+
+                if (Ph.IsFreeCellLocal(considerCell))
+                {
+                    neighbours.Add(new QNodeLocal(considerCell, Ph, null));
+                }
+            }
+
+            return neighbours;
+        }
+    }
+
+    public class QNodeGlobal : QNode
+    {
+        public QNodeGlobal(Vector vec, Physic physic, IEnumerable<QNode> neighbours) 
+            : base(vec, physic, neighbours)
+        {
+        }
+
+        public override IEnumerable<QNode> CalculateNeighbours()
+        {
+            var centralCell = Vec;
+
+            List<QNode> neighbours = new List<QNode>();
+
+            foreach (var neighbour in Physic.neighboursVectors)
+            {
+                var considerCell = (centralCell + neighbour);
+
+                if (considerCell.X < 0 || considerCell.Y < 0 || considerCell.X >= Ph.GlobalCellGridCount || considerCell.Y >= Ph.GlobalCellGridCount)
+                    continue;
+
+                if (Ph.IsFreeCellGlobal(considerCell))
+                {
+                    neighbours.Add(new QNodeGlobal(considerCell, Ph, null));
+                }
+            }
+
+            return neighbours;
+        }
+    }
+
+    public abstract class QNode : IHasNeighbours<QNode>, IEquatable<QNode>
     {
         //public Func<QNode, IEnumerable<QNode>> CalculateNeighbours { get; }
         public Physic Ph { get; }
@@ -415,7 +620,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
                 return _neighbours;
             }
-            private set { _neighbours = value; }
+            protected set { _neighbours = value; }
         }
 
         public QNode(Vector vec, Physic physic, IEnumerable<QNode> neighbours)
@@ -426,27 +631,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             Neighbours = neighbours;
         }
 
-        public IEnumerable<QNode> CalculateNeighbours()
-        {
-            var centralCell = Vec;
-
-            List<QNode> neighbours = new List<QNode>();
-
-            foreach (var neighbour in Physic.neighboursVectors)
-            {
-                var considerCell = (centralCell + neighbour);
-
-                if (considerCell.X < 0 || considerCell.Y < 0 || considerCell.X >= Ph.CellGridCount || considerCell.Y >= Ph.CellGridCount)
-                    continue;
-
-                if (Ph.IsFreeCell(considerCell))
-                {
-                    neighbours.Add(new QNode(considerCell, Ph, null));
-                }
-            }
-
-            return neighbours;
-        }
+        public abstract IEnumerable<QNode> CalculateNeighbours();
 
         #region IEquatable<QNode>
         public bool Equals(QNode other)
