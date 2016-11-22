@@ -17,7 +17,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
     public sealed class MyStrategy : IStrategy {
 
         // Global variables
-
+        private bool STOP = false;
+        private VectorD NextPoint = new VectorD(500, 800);
 
         // For one move variables
         Wizard self; World world; Game game; Move move;
@@ -26,7 +27,61 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         public void CalculateNextMovement()
         {
+            RandomRun();
+        }
 
+        public void RandomRun()
+        {
+            var path = physic.FindPathTo(NextPoint);
+
+            if (path == null || path.PathLength <= 5)
+            {
+                NextPoint = NextPoint == new VectorD(2000, 300) ? new VectorD(500, 800) : new VectorD(2000, 300);
+                path = physic.FindPathTo(NextPoint);
+            }
+
+            var target = physic.GetPointFromCell(path.Reverse().ToArray()[1].LastStep.Vec);
+
+            foreach (var ppp in path.Reverse())
+            {
+                var pp = physic.GetPointFromCell(ppp.LastStep.Vec);
+                vc.FillCircle(pp.X, pp.Y, 4.0f, 0, 0, 1);
+            }
+
+            var task = new Task();
+
+            if (!STOP)
+            {
+                SetRunToPoint(task.Movement, target);
+            }
+            task.Movement.Action = ActionType.Staff;
+
+            moveTasks.Add(task);
+        }
+
+        private void SetRunToPoint(Move move, VectorD target)
+        {
+            var vectorToTarget = (target - new VectorD(self));
+
+            if (vectorToTarget.SqLength < 4)
+            {
+                move.Speed = move.StrafeSpeed = 0;
+                return;
+            }
+
+            double angle = self.GetAngleTo(target.X, target.Y);
+
+            VectorD vect = QMath.AngleToVector(angle);
+
+            double coof = new VectorD(vect.X / 4.0, vect.Y / 3.0).Length;
+            vect *= 1.0 / coof;
+
+            move.StrafeSpeed = vect.Y;
+            move.Speed = vect.X;
+
+            //vc.Line(self.X, self.Y, (self.X + vect.X), (self.Y + vect.Y), 0.7f, 0.9f, 0.1f);
+
+            move.Turn = angle;
         }
 
         private void ApplyNextMovement()
@@ -41,7 +96,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 return;
             }
 
-            move = bestTask.Movement;
+            move.CopyFrom(bestTask.Movement);
         }
 
         public void Move(Wizard self, World world, Game game, Move move)
@@ -71,6 +126,10 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             physic = new Physic(self,world,game,move);
 
             moveTasks = new List<Task>();
+
+            // Dirty hacks
+            AStar.SavedVectors = AStar.ToSaveVectors;
+            AStar.ToSaveVectors = new Dictionary<Vector, Vector>();
         }
 
 #if QDEBUG
@@ -84,12 +143,12 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 for (int j = 0; j < physic.CellGridCount; j++)
                 {
                     var coords = new VectorD(i * physic.CellGridWidth + physic.CellGridWidth / 2, j * physic.CellGridWidth + physic.CellGridWidth / 2);
-                    var free = physic.IsFreeCell(new Vector(i, j));
+                    var free = physic.cells[i, j];//physic.IsFreeCell(new Vector(i, j));
 
-                    if (free)
-                        vc.FillCircle(coords.X, coords.Y, 5.0f, 0, 1, 0);
-                    else
-                        vc.FillCircle(coords.X, coords.Y, 5.0f, 1, 0, 0);
+                    if (free == Physic.CellStatus.Free)
+                        vc.FillCircle(coords.X, coords.Y, 2.0f, 0, 1, 0);
+                    else if (free == Physic.CellStatus.Busy)
+                        vc.FillCircle(coords.X, coords.Y, 2.0f, 1, 0, 0);
                 }
             }
         }
@@ -138,8 +197,10 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         private List<CircularUnit>[,] clusters;
 
-        private static readonly Vector[] neighboursVectors = {new Vector(-1, -1), new Vector(0, -1), new Vector(1, -1), new Vector(-1, 0), new Vector(1, 0), new Vector(-1, 1), new Vector(0, 1), new Vector(1,1) };
-        private static readonly Vector[] neighboursClusters = neighboursVectors.Union(new[] {new Vector(0, 0)}).ToArray();
+        public static readonly Vector[] neighboursVectors = {new Vector(-1, -1), new Vector(0, -1), new Vector(1, -1), new Vector(-1, 0), new Vector(1, 0), new Vector(-1, 1), new Vector(0, 1), new Vector(1,1) };
+        public static readonly Vector[] neisAndMeClusters = neighboursVectors.Union(new[] {new Vector(0, 0)}).ToArray();
+
+        private Building[] basesBuildings;
 
         // Cells
         // {1,2,4,5,8,10,16,20,25,32,40,50,80,100,125,160,200,250,400,500,800,1000,2000,4000}
@@ -148,7 +209,10 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         private double wizardRadius, wizardRadiusSq;
 
-        private CellStatus[,] cells;
+        public CellStatus[,] cells;
+
+        // Nodes
+        // ... empty
 
         public Physic(Wizard self, World world, Game game, Move move)
         {
@@ -188,6 +252,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             AddUnitsToClusters(world.Trees);
             AddUnitsToClusters(world.Wizards.Where(wizard => !wizard.IsMe));
 
+            basesBuildings = world.Buildings.Where(b => b.Type == BuildingType.FactionBase).ToArray();
         }
 
         private void GenerateCells()
@@ -206,14 +271,32 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             }
         }
 
+        public Path<QNode> FindPathTo(VectorD end)
+        {
+            return FindPath(GetCell(self), GetCell(end));
+        }
+
         public Path<QNode> FindPath(VectorD start, VectorD end)
         {
-            return null;
+            return FindPath(GetCell(start), GetCell(end));
         }
 
         public Path<QNode> FindPath(Vector start, Vector end)
         {
-            return null;//Path<QNode> shortestPath = AStar.FindPath(start, destination, distance, haversineEstimation);
+            var startNode = GetNode(start);
+            var endNode = GetNode(end);
+
+            Path<QNode> shortestPath = AStar.FindPath(startNode, endNode, 
+                (node1, node2) => (node2.Vec - node1.Vec).Length, 
+                node => (endNode.Vec - node.Vec).Length,
+                20);
+
+            return shortestPath;
+        }
+
+        public QNode GetNode(Vector cell)
+        {
+            return new QNode(cell, this, null);
         }
 
         public bool IsFreeCell(VectorD coord)
@@ -233,11 +316,11 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         public CellStatus CalculateCellStatus(Vector cell)
         {
-            var coords = new VectorD(cell.X * CellGridWidth + CellGridWidth / 2, cell.Y * CellGridWidth + CellGridWidth / 2);
+            var coords = GetPointFromCell(cell);
 
             var centralCluster = GetCluster(coords);
 
-            foreach (var neigh in neighboursClusters)
+            foreach (var neigh in neisAndMeClusters)
             {
                 var cl = (centralCluster + neigh);
 
@@ -248,6 +331,15 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 {
                     var unitPointRadius = (wizardRadius + unit.Radius);
                     if (SquareDistance(unit, coords) <= unitPointRadius * unitPointRadius)
+                    {
+                        return CellStatus.Busy;
+                    }
+                }
+
+                foreach (var building in basesBuildings)
+                {
+                    var unitPointRadius = (wizardRadius + building.Radius);
+                    if (SquareDistance(building, coords) <= unitPointRadius * unitPointRadius)
                     {
                         return CellStatus.Busy;
                     }
@@ -269,12 +361,17 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         public Vector GetCell(Unit unit)
         {
-            return new Vector((int)Math.Floor(unit.X / ClusterGridWidth), (int)Math.Floor(unit.Y / ClusterGridWidth));
+            return new Vector((int)Math.Floor(unit.X / CellGridWidth), (int)Math.Floor(unit.Y / CellGridWidth));
         }
 
         public Vector GetCell(VectorD coord)
         {
-            return new Vector((int)Math.Floor(coord.X / ClusterGridWidth), (int)Math.Floor(coord.Y / ClusterGridWidth));
+            return new Vector((int)Math.Floor(coord.X / CellGridWidth), (int)Math.Floor(coord.Y / CellGridWidth));
+        }
+
+        public VectorD GetPointFromCell(Vector cell)
+        {
+            return new VectorD(cell.X * CellGridWidth + CellGridWidth / 2, cell.Y * CellGridWidth + CellGridWidth / 2);
         }
 
         public double SquareDistance(Unit unit1, Unit unit2)
@@ -300,30 +397,102 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         public List<TNode> Nodes { get; set; } = new List<TNode>();
     }
 
-    public class QNode : IHasNeighbours<QNode>
+    public class QNode : IHasNeighbours<QNode>, IEquatable<QNode>
     {
-        public QNode PathParent { get; }
-        public int X { get; }
-        public int Y { get; }
-        public IEnumerable<QNode> Neighbours { get; }
+        //public Func<QNode, IEnumerable<QNode>> CalculateNeighbours { get; }
+        public Physic Ph { get; }
+        public Vector Vec { get; }
 
-        public QNode(QNode pathParent, int x, int y, IEnumerable<QNode> neighbours)
+        private IEnumerable<QNode> _neighbours;
+        public IEnumerable<QNode> Neighbours
         {
-            PathParent = pathParent;
-            X = x;
-            Y = y;
+            get
+            {
+                if (_neighbours == null)
+                {
+                    _neighbours = CalculateNeighbours();
+                }
+
+                return _neighbours;
+            }
+            private set { _neighbours = value; }
+        }
+
+        public QNode(Vector vec, Physic physic, IEnumerable<QNode> neighbours)
+        {
+            Vec = vec;
+            //CalculateNeighbours = calculateNeighbours;
+            Ph = physic;
             Neighbours = neighbours;
         }
+
+        public IEnumerable<QNode> CalculateNeighbours()
+        {
+            var centralCell = Vec;
+
+            List<QNode> neighbours = new List<QNode>();
+
+            foreach (var neighbour in Physic.neighboursVectors)
+            {
+                var considerCell = (centralCell + neighbour);
+
+                if (considerCell.X < 0 || considerCell.Y < 0 || considerCell.X >= Ph.CellGridCount || considerCell.Y >= Ph.CellGridCount)
+                    continue;
+
+                if (Ph.IsFreeCell(considerCell))
+                {
+                    neighbours.Add(new QNode(considerCell, Ph, null));
+                }
+            }
+
+            return neighbours;
+        }
+
+        #region IEquatable<QNode>
+        public bool Equals(QNode other)
+        {
+            if (ReferenceEquals(null, other)) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Equals(Vec, other.Vec);
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj)) return false;
+            if (ReferenceEquals(this, obj)) return true;
+            if (obj.GetType() != this.GetType()) return false;
+            return Equals((QNode) obj);
+        }
+
+        public override int GetHashCode()
+        {
+            return (Vec != null ? Vec.GetHashCode() : 0);
+        }
+
+        public static bool operator ==(QNode left, QNode right)
+        {
+            return Equals(left, right);
+        }
+
+        public static bool operator !=(QNode left, QNode right)
+        {
+            return !Equals(left, right);
+        }
+        #endregion IEquatable<QNode>
     }
 
     #region AStar Implementation
     public class AStar
     {
-        static public Path<TNode> FindPath<TNode>(
+        public static Dictionary<Vector, Vector> SavedVectors = new Dictionary<Vector, Vector>();
+        public static Dictionary<Vector, Vector> ToSaveVectors = new Dictionary<Vector, Vector>();
+
+        public static Path<TNode> FindPath<TNode>(
             TNode start,
             TNode destination,
             Func<TNode, TNode, double> distance,
-            Func<TNode, double> estimate) where TNode : IHasNeighbours<TNode>
+            Func<TNode, double> estimate,
+            int breakAtPathLength = -1) where TNode : QNode
         {
             var closed = new HashSet<TNode>();
 
@@ -341,11 +510,40 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 if (path.LastStep.Equals(destination))
                     return path;
 
+                if (breakAtPathLength > 0 && path.PathLength == breakAtPathLength)
+                {
+                    //ToSaveVectors.Add(destination.Vec, path.LastStep.Vec);
+                    return path;
+                    //List<Path<TNode>> pathList = new List<Path<TNode>>();
+                    //pathList.Add(path);
+
+                    //while (!queue.IsEmpty)
+                    //{
+                    //    Path<TNode> p = queue.Dequeue();
+
+                    //    if (p.TotalCost != path.TotalCost)
+                    //        break;
+
+                    //    pathList.Add(p);
+                    //}
+
+                    //return pathList
+                    //    .OrderBy(p => p.LastStep.Vec.X)
+                    //    .ThenBy(p => p.LastStep.Vec.Y)
+                    //    .Last();
+                }
+
                 closed.Add(path.LastStep);
 
                 foreach (TNode n in path.LastStep.Neighbours)
                 {
                     double d = distance(path.LastStep, n);
+
+                    Vector savedVector;
+                    if (SavedVectors.TryGetValue(destination.Vec, out savedVector) && n.Vec == savedVector)
+                    {
+                        d = -10;
+                    }
 
                     var newPath = path.AddStep(n, d);
 
@@ -364,26 +562,24 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
     public class Path<TNode> : IEnumerable<Path<TNode>>
     {
+        public int PathLength { get; private set; }
         public TNode LastStep { get; private set; }
-
         public Path<TNode> PreviousSteps { get; private set; }
-
         public double TotalCost { get; private set; }
 
-        private Path(TNode lastStep, Path<TNode> previousSteps, double totalCost)
+        private Path(TNode lastStep, Path<TNode> previousSteps, double totalCost, int pathLength)
         {
+            PathLength = pathLength;
             LastStep = lastStep;
-
             PreviousSteps = previousSteps;
-
             TotalCost = totalCost;
         }
 
-        public Path(TNode start) : this(start, null, 0) { }
+        public Path(TNode start) : this(start, null, 0, 1) { }
 
         public Path<TNode> AddStep(TNode step, double stepCost)
         {
-            return new Path<TNode>(step, this, TotalCost + stepCost);
+            return new Path<TNode>(step, this, TotalCost + stepCost, PathLength + 1);
         }
 
         public IEnumerator<Path<TNode>> GetEnumerator()
@@ -447,8 +643,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
     public class Task
     {
-        public Move Movement { get; }
-        public double Cost { get; }
+        public Move Movement { get; } = new Move();
+        public double Cost { get; } = 0;
     }
 
     #region Math
@@ -456,6 +652,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
     {
         public static VectorD AngleToVector(double angle)
         {
+            // It's works only for Russia AI Cup physical
             return new VectorD(Math.Cos(angle), Math.Sin(angle));
         }
 
@@ -602,6 +799,11 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         {
             X = v.X;
             Y = v.Y;
+        }
+
+        public VectorD(Unit u)
+            : this(u.X, u.Y)
+        {
         }
 
         public double GetAngleTo(VectorD vec)
@@ -884,4 +1086,21 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         }
     }
 #endif
+
+    public static class MyExtensions
+    {
+        public static void CopyFrom(this Move my, Move from)
+        {
+            my.Turn = from.Turn;
+            my.Speed = from.Speed;
+            my.StrafeSpeed = from.StrafeSpeed;
+            my.Action = from.Action;
+            my.CastAngle = from.CastAngle;
+            my.MaxCastDistance = from.MaxCastDistance;
+            my.MinCastDistance = from.MinCastDistance;
+            my.SkillToLearn = from.SkillToLearn;
+            my.Messages = from.Messages;
+            my.StatusTargetId = from.StatusTargetId;
+        }
+    }
 }
