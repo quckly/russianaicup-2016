@@ -25,9 +25,21 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         private Physic physic;
         private List<Task> moveTasks;
 
+        /***
+         * 
+         * Move to point = 1000
+         * 
+         */
         public void CalculateNextMovement()
         {
-            RandomRun();
+            CalculateLowHpStrategy();
+
+
+        }
+
+        public void CalculateLowHpStrategy()
+        {
+            
         }
 
         public void RandomRun()
@@ -140,6 +152,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             AStar.ToSaveVectors = new Dictionary<Vector, Vector>();
         }
 
+        #region DEBUG
 #if QDEBUG
         private static bool tryConnect = false;
         public static VisualClient vc = null;
@@ -192,11 +205,29 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             vc.EndPost();
         }
 #endif
+        #endregion
     }
 
+    public class Task
+    {
+        public TaskType Type { get; set; } = TaskType.Raw;
+        public double Cost { get; set; } = 0;
+
+        public Move Movement { get; set; } = new Move();
+        public VectorD Target { get; set; }
+    }
+
+    public enum TaskType
+    {
+        Raw = 0,
+        MoveTo
+    }
+
+    #region Physics
     public class Physic
     {
         Wizard self; World world; Game game; Move move;
+
 
         // Word model
         // Clusters
@@ -224,8 +255,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         public CellStatus[,] cellsGlobal;
         public CellStatus[,] cellsLocal;
 
-        // Nodes
-        // ... empty
+        private static QSavedPaths dirtyHackPathsLocal = new QSavedPaths(30);
+        private static QSavedPaths dirtyHackPathsGlobal = new QSavedPaths(30);
 
         public Physic(Wizard self, World world, Game game, Move move)
         {
@@ -326,6 +357,9 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 (node1, node2) => (node2.Vec - node1.Vec).Length,
                 node => (endNodeGlobal.Vec - node.Vec).Length);
 
+            // Hack: TODO:
+            shortestPathGlobal = dirtyHackPathsGlobal.AnalyzePath(GetCellGlobal(end), shortestPathGlobal);
+
             if (shortestPathGlobal == null)
             {
                 return null;
@@ -360,6 +394,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             var shortestPathLocal = AStar.FindPath(startNodeLocal, endNodeLocal,
                 (node1, node2) => (node2.Vec - node1.Vec).Length,
                 node => (endNodeLocal.Vec - node.Vec).Length);
+
+            shortestPathLocal = dirtyHackPathsLocal.AnalyzePath(GetCellLocal(nextLocalEndpoint), shortestPathLocal);
 
             return shortestPathLocal;
 
@@ -537,6 +573,107 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         }
     }
 
+    public class QSavedPaths
+    {
+        public int ForcedPathsCount { get; set; }
+        public Dictionary<Vector, SavedPath> SavedPaths = new Dictionary<Vector, SavedPath>();
+
+        public QSavedPaths(int forcedPathsCount)
+        {
+            ForcedPathsCount = forcedPathsCount;
+        }
+
+        public Path<QNode> AnalyzePath(Vector end, Path<QNode> path)
+        {
+            if (SavedPaths.ContainsKey(end))
+            {
+                return SavedPaths[end].AnalyzePath(path);
+            }
+            else
+            {
+                SavedPaths.Add(end, new SavedPath(path, ForcedPathsCount));
+                return path;
+            }
+        }
+
+        public class SavedPath
+        {
+            private int forcedPaths = 0;
+            private PathState state = PathState.Normal;
+            private Queue<Path<QNode>> paths = new Queue<Path<QNode>>();
+            public int ForcedPathsCount { get; set; }
+
+            public SavedPath(Path<QNode> path, int forcedPathsCount)
+            {
+                ForcedPathsCount = forcedPathsCount;
+
+                paths.Enqueue(path);
+            }
+
+            public Path<QNode> AnalyzePath(Path<QNode> path)
+            {
+                if (path == null)
+                    return null; 
+
+                var currentCellVector = path.Last().LastStep.Vec;
+
+                switch (state)
+                {
+                case PathState.Normal:
+                {
+                    var pa = paths.Reverse().ToArray(); // Reverse queue to stack
+
+                    if (pa.Length >= 3)
+                    {
+                        var steps = pa.Take(3)
+                            .Select(p => p.First().PreviousSteps?.LastStep.Vec)
+                            .Concat(new[] {path.First().PreviousSteps?.LastStep.Vec})
+                            .ToArray();
+
+                        var second = pa[0];
+
+                        if (steps[0] != steps[1] && steps[0] == steps[2] && steps[1] == steps[3]) // Check parity
+                        {
+                            state = PathState.Forced;
+                            forcedPaths = ForcedPathsCount;
+                            //lastForcedCell = second.Last().LastStep.Vec;
+
+                            return second;
+                        }
+
+                        paths.Dequeue();
+                    }
+
+                    paths.Enqueue(path);
+
+                    break;
+                }
+                case PathState.Forced:
+                {
+                    if (--forcedPaths == 0)
+                    {
+                        state = PathState.Normal;
+
+                        paths.Clear();
+
+                        return AnalyzePath(path);
+                    }
+                        
+                    return paths.Peek();
+                }
+                }
+
+                return path;
+            }
+
+            public enum PathState
+            {
+                Normal = 0,
+                Forced
+            }
+        }
+    }
+
     public class QCluster<TNode> where TNode : IHasNeighbours<TNode>
     {
         public List<TNode> Nodes { get; set; } = new List<TNode>();
@@ -665,6 +802,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         }
         #endregion IEquatable<QNode>
     }
+    #endregion
 
     #region AStar Implementation
     public class AStar
@@ -825,12 +963,6 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         #endregion
     }
     #endregion
-
-    public class Task
-    {
-        public Move Movement { get; } = new Move();
-        public double Cost { get; } = 0;
-    }
 
     #region Math
     public class QMath
@@ -1063,6 +1195,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
     }
     #endregion
 
+    #region DEBUG
 #if QDEBUG
     public sealed class VisualClient
     {
@@ -1271,6 +1404,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         }
     }
 #endif
+    #endregion
 
     public static class MyExtensions
     {
