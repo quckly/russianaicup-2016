@@ -18,26 +18,125 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         // Global variables
         private bool STOP = false;
-        private VectorD NextPoint = new VectorD(500, 800);
+        private VectorD NextPoint = new VectorD(4000-250, 250);
 
         // For one move variables
         Wizard self; World world; Game game; Move move;
         private Physic physic;
         private List<Task> moveTasks;
 
+        // Consts:
+        public class Const
+        {
+            public static readonly double LOW_HP_FACTOR = 0.35;
+            public static readonly double LOW_HP_TASK_MUL = 150;
+
+            public static readonly double COST_ENEMY_ATTACK = 4000;
+            public static readonly double ENEMY_ATTACK_VOLATILE = 2000;
+
+            public static readonly double ddbfd = 110;
+            public static readonly double dfbdfb = 110;
+            public static readonly double fddfb = 110;
+            public static readonly double fdbfdb = 110;
+            public static readonly double fdb = 110;
+            public static readonly double fdbf = 110;
+
+            public static VectorD BaseOrigin = new VectorD(250, 4000-250);
+        }
+
         /***
          * 
-         * Move to point = 1000
+         * Move to point = 1 000
+         * 
+         * Low HP go back ~ 10 000
          * 
          */
         public void CalculateNextMovement()
         {
             CalculateLowHpStrategy();
+            CalculateAttack();
 
+            RunToMidlle();
 
+            RandomRun();
         }
 
         public void CalculateLowHpStrategy()
+        {
+            if (self.Life < self.MaxLife * Const.LOW_HP_FACTOR)
+            {
+                var task = new Task(TaskType.MoveTo);
+                task.Cost = (self.MaxLife - self.Life) * Const.LOW_HP_TASK_MUL;
+
+                task.Target = Const.BaseOrigin;
+
+                AddTask(task);
+            }
+        }
+
+        private void CalculateAttack()
+        {
+            foreach (var enemy in GetEnemies())
+            {
+                var distanceToEnemy = self.GetDistanceTo(enemy);
+                if (distanceToEnemy > self.CastRange)
+                    continue;
+
+                double angle = self.GetAngleTo(enemy);
+
+                var task = new Task();
+                task.Movement.Turn = angle;
+
+                // Если цель перед нами, ...
+                if (Math.Abs(angle) < game.StaffSector / (2 + 0.1))
+                {
+                    task.Movement.Action = ActionType.MagicMissile;
+                    task.Movement.CastAngle = angle;
+                    task.Movement.MinCastDistance = (distanceToEnemy - enemy.Radius); // + game.MagicMissileRadius);
+
+                    task.Cost = Const.COST_ENEMY_ATTACK + (1 - (double)enemy.Life/enemy.MaxLife)*Const.ENEMY_ATTACK_VOLATILE;
+                }
+
+                if (enemy is Wizard)
+                {
+                    task.Cost *= 2;
+                }
+                else if (enemy is Minion)
+                {
+                    
+                }
+                else if (enemy is Building)
+                {
+                    
+                }
+
+                AddTask(task);
+            }
+        }
+
+        private List<LivingUnit> GetEnemies()
+        {
+            var enemies = new List<LivingUnit>();
+
+            AddEnemies(enemies, world.Minions);
+            AddEnemies(enemies, world.Buildings);
+            AddEnemies(enemies, world.Wizards);
+
+            return enemies;
+        }
+
+        private void AddEnemies(List<LivingUnit> enemies, LivingUnit[] candidates)
+        {
+            foreach (var unit in candidates)
+            {
+                if (unit.Faction == self.Faction)
+                    continue;
+
+                enemies.Add(unit);
+            }
+        }
+
+        private void RunToMidlle()
         {
             
         }
@@ -46,10 +145,15 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         {
             var path = physic.FindPathTo(NextPoint);
 
-            if (path == null || path.PathLength <= 5)
+//            if (path == null || path.PathLength <= 5)
+//            {
+//                NextPoint = NextPoint == new VectorD(2000, 300) ? new VectorD(500, 800) : new VectorD(2000, 300);
+//                path = physic.FindPathTo(NextPoint);
+//            }
+
+            if (path == null)
             {
-                NextPoint = NextPoint == new VectorD(2000, 300) ? new VectorD(500, 800) : new VectorD(2000, 300);
-                path = physic.FindPathTo(NextPoint);
+                return;
             }
 
             var target = physic.GetPointFromCellLocal(path.Reverse().ToArray()[1].LastStep.Vec);
@@ -104,10 +208,15 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             move.Turn = angle;
         }
 
+        private void AddTask(Task task)
+        {
+            moveTasks.Add(task);
+        }
+
         private void ApplyNextMovement()
         {
             var bestTask = moveTasks
-                .OrderBy(task => task.Cost)
+                .OrderBy(task => -task.Cost)
                 .FirstOrDefault();
 
             if (bestTask == null) // This is not be true never
@@ -116,7 +225,14 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 return;
             }
 
-            move.CopyFrom(bestTask.Movement);
+            if (bestTask.Type == TaskType.MoveTo)
+            {
+                SetRunToPoint(move, bestTask.Target);
+            }
+            else
+            {
+                move.CopyFrom(bestTask.Movement);
+            }
         }
 
         public void Move(Wizard self, World world, Game game, Move move)
@@ -215,6 +331,20 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         public Move Movement { get; set; } = new Move();
         public VectorD Target { get; set; }
+
+        public Task() { }
+
+        public Task(TaskType type, double cost, VectorD target)
+        {
+            Type = type;
+            Cost = cost;
+            Target = target;
+        }
+
+        public Task(TaskType type)
+        {
+            Type = type;
+        }
     }
 
     public enum TaskType
@@ -240,6 +370,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         public static readonly Vector[] neighboursVectors = {new Vector(-1, -1), new Vector(0, -1), new Vector(1, -1), new Vector(-1, 0), new Vector(1, 0), new Vector(-1, 1), new Vector(0, 1), new Vector(1,1) };
         public static readonly Vector[] neisAndMeClusters = neighboursVectors.Union(new[] {new Vector(0, 0)}).ToArray();
 
+        public static readonly int[] NextGlobalPathNodeIndexes = { 2, 1, 3, 4, 5 };
+
         private Building[] basesBuildings;
 
         // Cells
@@ -255,8 +387,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         public CellStatus[,] cellsGlobal;
         public CellStatus[,] cellsLocal;
 
-        private static QSavedPaths dirtyHackPathsLocal = new QSavedPaths(30);
-        private static QSavedPaths dirtyHackPathsGlobal = new QSavedPaths(30);
+        private static QSavedPaths dirtyHackPathsLocal = new QSavedPaths(40);
+        private static QSavedPaths dirtyHackPathsGlobal = new QSavedPaths(40);
 
         public Physic(Wizard self, World world, Game game, Move move)
         {
@@ -376,12 +508,15 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             if (glPath.Length >= 2)
             {
-                for (int i = 2; i <= 5 && i < glPath.Length; i++)
+                foreach (var id in NextGlobalPathNodeIndexes)
                 {
-                    nextLocalEndpoint = GetPointFromCellGlobal(glPath[i].LastStep.Vec);
+                    if (id < glPath.Length)
+                    {
+                        nextLocalEndpoint = GetPointFromCellGlobal(glPath[id].LastStep.Vec);
 
-                    if (IsFreeCellLocal(nextLocalEndpoint))
-                        break;
+                        if (IsFreeCellLocal(nextLocalEndpoint))
+                            break;
+                    }
                 }
             }
 
