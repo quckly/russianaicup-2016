@@ -158,11 +158,13 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             var target = physic.GetPointFromCellLocal(path.Reverse().ToArray()[1].LastStep.Vec);
 
+#if QDEBUG
             foreach (var ppp in path.Reverse())
             {
                 var pp = physic.GetPointFromCellLocal(ppp.LastStep.Vec);
                 vc.FillCircle(pp.X, pp.Y, 4.0f, 0, 0, 1);
             }
+#endif
 
             var task = new Task();
 
@@ -500,11 +502,13 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             var glPath = shortestPathGlobal.Reverse().ToArray();
             VectorD nextLocalEndpoint = end;
 
+#if QDEBUG
             foreach (var ppp in glPath)
             {
                 var pp = GetPointFromCellGlobal(ppp.LastStep.Vec);
                 MyStrategy.vc.FillCircle(pp.X, pp.Y, 4.0f, 1, 0, 1);
             }
+#endif
 
             if (glPath.Length >= 2)
             {
