@@ -38,7 +38,7 @@
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
     <OutputPath>bin\Debug\</OutputPath>
-    <DefineConstants>TRACE;DEBUG;QDEBUG</DefineConstants>
+    <DefineConstants>TRACE;DEBUG</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
@@ -80,6 +80,7 @@
     <Compile Include="Model\CircularUnit.cs" />
     <Compile Include="Model\Faction.cs" />
     <Compile Include="Model\Game.cs" />
+    <Compile Include="Model\LaneType.cs" />
     <Compile Include="Model\LineType.cs" />
     <Compile Include="Model\LivingUnit.cs" />
     <Compile Include="Model\Message.cs" />
