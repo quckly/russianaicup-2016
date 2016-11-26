@@ -17,12 +17,12 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
     public sealed class MyStrategy : IStrategy {
 
         // Global variables
-        private bool STOP = false;
         private VectorD NextPoint = new VectorD(4000-250, 250);
 
         // For one move variables
         Wizard self; World world; Game game; Move move;
-        private Physic physic;
+        private CachedResources cached;
+        public static Physic physic;
         private List<Task> moveTasks;
 
         // Consts:
@@ -33,9 +33,12 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             public static readonly double COST_ENEMY_ATTACK = 4000;
             public static readonly double ENEMY_ATTACK_VOLATILE = 2000;
+            public static readonly double ATTACK_ENEMY_RADIUS_PART = 0.5;
 
-            public static readonly double ddbfd = 110;
-            public static readonly double dfbdfb = 110;
+            public static readonly double COST_ENEMY_ATTACK_PRE = 2500;
+            public static readonly double ENEMY_ATTACK_VOLATILE_PRE = 500;
+
+            public static readonly double CONSIDER_ATTACK_DISTANCE = 70;
             public static readonly double fddfb = 110;
             public static readonly double fdbfdb = 110;
             public static readonly double fdb = 110;
@@ -48,6 +51,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
          * 
          * Move to point = 1 000
          * 
+         * Attack 5000 +- 2000, Wizard: 6000-12000
+         * 
          * Low HP go back ~ 10 000
          * 
          */
@@ -55,6 +60,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         {
             CalculateLowHpStrategy();
             CalculateAttack();
+
+            CalulatePickUpBonuses();
 
             RunToMidlle();
 
@@ -76,64 +83,97 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         private void CalculateAttack()
         {
-            foreach (var enemy in GetEnemies())
+            // Цели в радиусе видимости
+            if (self.RemainingActionCooldownTicks == 0)
+            {
+                if (cached.RemainingCooldownTicksByAction[(int)ActionType.MagicMissile] == 0 && self.Mana >= game.MagicMissileManacost)
+                {
+                    foreach (var enemy in cached.Enemies)
+                    {
+                        var distanceToEnemy = self.GetDistanceTo(enemy) - enemy.Radius * Const.ATTACK_ENEMY_RADIUS_PART;
+                        if (distanceToEnemy > self.CastRange)
+                            continue;
+
+                        double angle = self.GetAngleTo(enemy);
+
+                        var task = new Task();
+                        task.Movement.Turn = angle;
+
+                        // Если цель перед нами, ...
+                        if (Math.Abs(angle) < game.StaffSector/(2 + 0.1))
+                        {
+                            task.Movement.Action = ActionType.MagicMissile;
+                            task.Movement.CastAngle = angle;
+                            task.Movement.MinCastDistance = (distanceToEnemy - enemy.Radius * (1 - Const.ATTACK_ENEMY_RADIUS_PART) + game.MagicMissileRadius);
+
+                            task.Cost = Const.COST_ENEMY_ATTACK +
+                                        (1 - (double) enemy.Life/enemy.MaxLife)*Const.ENEMY_ATTACK_VOLATILE;
+                        }
+
+                        if (enemy is Wizard)
+                        {
+                            task.Cost *= 2;
+                        }
+                        else if (enemy is Minion)
+                        {
+
+                        }
+                        else if (enemy is Building)
+                        {
+                            task.Cost *= 0.33;
+                        }
+
+                        AddTask(task);
+                    }
+                }
+            }
+
+            // Тактический отход
+            var considerAttackDistance = self.CastRange + Const.CONSIDER_ATTACK_DISTANCE;
+
+            foreach (var enemy in cached.Enemies)
             {
                 var distanceToEnemy = self.GetDistanceTo(enemy);
-                if (distanceToEnemy > self.CastRange)
+                if (distanceToEnemy > considerAttackDistance)
                     continue;
 
                 double angle = self.GetAngleTo(enemy);
 
-                var task = new Task();
-                task.Movement.Turn = angle;
-
-                // Если цель перед нами, ...
-                if (Math.Abs(angle) < game.StaffSector / (2 + 0.1))
+                var task = new Task(TaskType.BackTrack)
                 {
-                    task.Movement.Action = ActionType.MagicMissile;
-                    task.Movement.CastAngle = angle;
-                    task.Movement.MinCastDistance = (distanceToEnemy - enemy.Radius); // + game.MagicMissileRadius);
-
-                    task.Cost = Const.COST_ENEMY_ATTACK + (1 - (double)enemy.Life/enemy.MaxLife)*Const.ENEMY_ATTACK_VOLATILE;
-                }
+                    Movement = {Turn = angle},
+                    Cost = Const.COST_ENEMY_ATTACK_PRE + (1 - (double) enemy.Life/enemy.MaxLife)*Const.ENEMY_ATTACK_VOLATILE_PRE
+                };
 
                 if (enemy is Wizard)
                 {
                     task.Cost *= 2;
                 }
-                else if (enemy is Minion)
+
+                // Calculate next point
+                var direction = (Const.BaseOrigin - new VectorD(enemy)).Normalize;
+                var distance = enemy.Radius * Const.ATTACK_ENEMY_RADIUS_PART + self.CastRange;
+                var tickDelay = Math.Max(self.RemainingActionCooldownTicks, cached.RemainingCooldownTicksByAction[(int)ActionType.MagicMissile]);
+
+                if (tickDelay > 0)
                 {
-                    
+                    distance += Math.Min(10.0, tickDelay * 3);
                 }
-                else if (enemy is Building)
+                else
                 {
-                    
+                    distance -= 10.0;
+                    task.Cost = 1100;
                 }
+                
+                task.Target = new VectorD(enemy) + direction * distance;
 
                 AddTask(task);
             }
         }
 
-        private List<LivingUnit> GetEnemies()
+        private void CalulatePickUpBonuses()
         {
-            var enemies = new List<LivingUnit>();
-
-            AddEnemies(enemies, world.Minions);
-            AddEnemies(enemies, world.Buildings);
-            AddEnemies(enemies, world.Wizards);
-
-            return enemies;
-        }
-
-        private void AddEnemies(List<LivingUnit> enemies, LivingUnit[] candidates)
-        {
-            foreach (var unit in candidates)
-            {
-                if (unit.Faction == self.Faction)
-                    continue;
-
-                enemies.Add(unit);
-            }
+            
         }
 
         private void RunToMidlle()
@@ -156,7 +196,9 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 return;
             }
 
-            var target = physic.GetPointFromCellLocal(path.Reverse().ToArray()[1].LastStep.Vec);
+            var pa = path.Reverse().ToArray();
+            
+            var target = pa.Length > 1 ? physic.GetPointFromCellLocal(pa[1].LastStep.Vec) : NextPoint;
 
 #if QDEBUG
             foreach (var ppp in path.Reverse())
@@ -167,17 +209,14 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 #endif
 
             var task = new Task();
-
-            if (!STOP)
-            {
-                SetRunToPoint(task.Movement, target);
-            }
-            task.Movement.Action = ActionType.Staff;
+            
+            SetRunToPoint(task.Movement, target);
+            //task.Movement.Action = ActionType.Staff;
 
             moveTasks.Add(task);
         }
 
-        private void SetRunToPoint(Move move, VectorD target)
+        private void SetRunToPoint(Move move, VectorD target, bool changeTurn = true)
         {
             var vectorToTarget = (target - new VectorD(self));
             var vectorToTargetLength = vectorToTarget.Length;
@@ -207,7 +246,10 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             //vc.Line(self.X, self.Y, (self.X + vect.X), (self.Y + vect.Y), 0.7f, 0.9f, 0.1f);
 
-            move.Turn = angle;
+            if (changeTurn)
+            {
+                move.Turn = angle;
+            }
         }
 
         private void AddTask(Task task)
@@ -230,6 +272,11 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             if (bestTask.Type == TaskType.MoveTo)
             {
                 SetRunToPoint(move, bestTask.Target);
+            }
+            else if (bestTask.Type == TaskType.BackTrack)
+            {
+                move.CopyFrom(bestTask.Movement);
+                SetRunToPoint(move, bestTask.Target, false);
             }
             else
             {
@@ -261,7 +308,9 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             this.game = game;
             this.move = move;
 
-            physic = new Physic(self,world,game,move);
+            cached = new CachedResources(self, world);
+
+            physic = new Physic(self, world, game, move, cached);
 
             moveTasks = new List<Task>();
 
@@ -352,14 +401,77 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
     public enum TaskType
     {
         Raw = 0,
-        MoveTo
+        MoveTo,
+        BackTrack
+    }
+
+    public class CachedResources
+    {
+        Wizard wizard; World world;
+
+        // Self
+        public SkillType[] Skills { get; }
+        public int[] RemainingCooldownTicksByAction { get; }
+
+        // World
+        public Player[] Players { get; }
+        public Wizard[] Wizards { get; }
+        public Minion[] Minions { get; }
+        public Projectile[] Projectiles { get; }
+        public Bonus[] Bonuses { get; }
+        public Building[] Buildings { get; }
+        public Tree[] Trees { get; }
+
+        // Common
+        public LivingUnit[] Enemies { get; }
+
+        public CachedResources(Wizard wizard, World world)
+        {
+            this.wizard = wizard;
+            this.world = world;
+
+            Skills = wizard.Skills;
+            RemainingCooldownTicksByAction = wizard.RemainingCooldownTicksByAction;
+
+            Players = world.Players;
+            Wizards = world.Wizards;
+            Minions = world.Minions;
+            Projectiles = world.Projectiles;
+            Bonuses = world.Bonuses;
+            Buildings = world.Buildings;
+            Trees = world.Trees;
+
+            Enemies = GetEnemies().ToArray();
+        }
+        
+        private List<LivingUnit> GetEnemies()
+        {
+            var enemies = new List<LivingUnit>();
+
+            AddEnemies(enemies, Minions);
+            AddEnemies(enemies, Buildings);
+            AddEnemies(enemies, Wizards);
+
+            return enemies;
+        }
+
+        private void AddEnemies(List<LivingUnit> enemies, LivingUnit[] candidates)
+        {
+            foreach (var unit in candidates)
+            {
+                if (unit.Faction == wizard.Faction)
+                    continue;
+
+                enemies.Add(unit);
+            }
+        }
     }
 
     #region Physics
     public class Physic
     {
         Wizard self; World world; Game game; Move move;
-
+        private CachedResources cached;
 
         // Word model
         // Clusters
@@ -391,13 +503,15 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         private static QSavedPaths dirtyHackPathsLocal = new QSavedPaths(40);
         private static QSavedPaths dirtyHackPathsGlobal = new QSavedPaths(40);
+        private static VectorD lastLocalEndpoint = null;
 
-        public Physic(Wizard self, World world, Game game, Move move)
+        public Physic(Wizard self, World world, Game game, Move move, CachedResources cached)
         {
             this.self = self;
             this.world = world;
             this.game = game;
             this.move = move;
+            this.cached = cached;
 
             wizardRadius = self.Radius;
             wizardRadiusSq = wizardRadius*wizardRadius;
@@ -426,7 +540,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             }
 
             // Fill
-            AddUnitsToClustersGlobal(world.Trees);
+            AddUnitsToClustersGlobal(cached.Trees);
 
             // Locals
             clustersLocals = new List<CircularUnit>[ClusterGridCount, ClusterGridCount];
@@ -439,12 +553,12 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             }
 
             // Fill
-            AddUnitsToClustersLocal(world.Buildings);
-            AddUnitsToClustersLocal(world.Minions);
-            AddUnitsToClustersLocal(world.Trees);
-            AddUnitsToClustersLocal(world.Wizards.Where(wizard => !wizard.IsMe));
+            AddUnitsToClustersLocal(cached.Buildings);
+            AddUnitsToClustersLocal(cached.Minions);
+            AddUnitsToClustersLocal(cached.Trees);
+            AddUnitsToClustersLocal(cached.Wizards.Where(wizard => !wizard.IsMe));
 
-            basesBuildings = world.Buildings.Where(b => b.Type == BuildingType.FactionBase).ToArray();
+            basesBuildings = cached.Buildings.Where(b => b.Type == BuildingType.FactionBase).ToArray();
         }
 
         private void GenerateCells()
@@ -484,23 +598,28 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         public Path<QNode> FindPath(VectorD start, VectorD end)
         {
-            var startNodeGlobal = GetNodeGlobal(GetCellGlobal(start));
-            var endNodeGlobal = GetNodeGlobal(GetCellGlobal(end));
-
-            Path<QNode> shortestPathGlobal = AStar.FindPath(startNodeGlobal, endNodeGlobal,
-                (node1, node2) => (node2.Vec - node1.Vec).Length,
-                node => (endNodeGlobal.Vec - node.Vec).Length);
-
-            // Hack: TODO:
-            shortestPathGlobal = dirtyHackPathsGlobal.AnalyzePath(GetCellGlobal(end), shortestPathGlobal);
-
-            if (shortestPathGlobal == null)
-            {
-                return null;
-            }
-
-            var glPath = shortestPathGlobal.Reverse().ToArray();
+            var globalDirection = end - start;
+            
             VectorD nextLocalEndpoint = end;
+
+            if (globalDirection.Length > 100)
+            {
+                var startNodeGlobal = GetNodeGlobal(GetCellGlobal(start));
+                var endNodeGlobal = GetNodeGlobal(GetCellGlobal(end));
+
+                Path<QNode> shortestPathGlobal = AStar.FindPath(startNodeGlobal, endNodeGlobal,
+                    (node1, node2) => (node2.Vec - node1.Vec).Length,
+                    node => (endNodeGlobal.Vec - node.Vec).Length);
+
+                // Hack: TODO:
+                shortestPathGlobal = dirtyHackPathsGlobal.AnalyzePath(GetCellGlobal(end), shortestPathGlobal);
+
+                if (shortestPathGlobal == null)
+                {
+                    return null;
+                }
+
+                var glPath = shortestPathGlobal.Reverse().ToArray();
 
 #if QDEBUG
             foreach (var ppp in glPath)
@@ -510,16 +629,17 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             }
 #endif
 
-            if (glPath.Length >= 2)
-            {
-                foreach (var id in NextGlobalPathNodeIndexes)
+                if (glPath.Length >= 2)
                 {
-                    if (id < glPath.Length)
+                    foreach (var id in NextGlobalPathNodeIndexes)
                     {
-                        nextLocalEndpoint = GetPointFromCellGlobal(glPath[id].LastStep.Vec);
+                        if (id < glPath.Length)
+                        {
+                            nextLocalEndpoint = GetPointFromCellGlobal(glPath[id].LastStep.Vec);
 
-                        if (IsFreeCellLocal(nextLocalEndpoint))
-                            break;
+                            if (IsFreeCellLocal(nextLocalEndpoint))
+                                break;
+                        }
                     }
                 }
             }
@@ -527,6 +647,12 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             if (!IsFreeCellLocal(nextLocalEndpoint))
                 return null;
 
+            if (nextLocalEndpoint != lastLocalEndpoint)
+            {
+                dirtyHackPathsLocal.Flush();
+                lastLocalEndpoint = nextLocalEndpoint;
+            }
+            
             var startNodeLocal = GetNodeLocal(GetCellLocal(start));
             var endNodeLocal = GetNodeLocal(GetCellLocal(nextLocalEndpoint));
 
@@ -555,12 +681,12 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         public QNode GetNodeGlobal(Vector cell)
         {
-            return new QNodeGlobal(cell, this, null);
+            return new QNodeGlobal(cell, null);
         }
 
         public QNode GetNodeLocal(Vector cell)
         {
-            return new QNodeLocal(cell, this, null);
+            return new QNodeLocal(cell, null);
         }
 
         public bool IsFreeCellGlobal(VectorD coord)
@@ -735,6 +861,11 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             }
         }
 
+        public void Flush()
+        {
+            SavedPaths.Clear();
+        }
+
         public class SavedPath
         {
             private int forcedPaths = 0;
@@ -820,13 +951,14 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
     public class QNodeLocal : QNode
     {
-        public QNodeLocal(Vector vec, Physic physic, IEnumerable<QNode> neighbours)
-            : base(vec, physic, neighbours)
+        public QNodeLocal(Vector vec, IEnumerable<QNode> neighbours)
+            : base(vec, neighbours)
         {
         }
 
         public override IEnumerable<QNode> CalculateNeighbours()
         {
+            var Ph = MyStrategy.physic;
             var centralCell = Vec;
 
             List<QNode> neighbours = new List<QNode>();
@@ -840,7 +972,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
                 if (Ph.IsFreeCellLocal(considerCell))
                 {
-                    neighbours.Add(new QNodeLocal(considerCell, Ph, null));
+                    neighbours.Add(new QNodeLocal(considerCell, null));
                 }
             }
 
@@ -850,13 +982,14 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
     public class QNodeGlobal : QNode
     {
-        public QNodeGlobal(Vector vec, Physic physic, IEnumerable<QNode> neighbours) 
-            : base(vec, physic, neighbours)
+        public QNodeGlobal(Vector vec, IEnumerable<QNode> neighbours) 
+            : base(vec, neighbours)
         {
         }
 
         public override IEnumerable<QNode> CalculateNeighbours()
         {
+            var Ph = MyStrategy.physic;
             var centralCell = Vec;
 
             List<QNode> neighbours = new List<QNode>();
@@ -870,7 +1003,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
                 if (Ph.IsFreeCellGlobal(considerCell))
                 {
-                    neighbours.Add(new QNodeGlobal(considerCell, Ph, null));
+                    neighbours.Add(new QNodeGlobal(considerCell, null));
                 }
             }
 
@@ -881,7 +1014,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
     public abstract class QNode : IHasNeighbours<QNode>, IEquatable<QNode>
     {
         //public Func<QNode, IEnumerable<QNode>> CalculateNeighbours { get; }
-        public Physic Ph { get; }
+        //public Physic Ph { get; }
         public Vector Vec { get; }
 
         private IEnumerable<QNode> _neighbours;
@@ -899,11 +1032,11 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             protected set { _neighbours = value; }
         }
 
-        public QNode(Vector vec, Physic physic, IEnumerable<QNode> neighbours)
+        public QNode(Vector vec, IEnumerable<QNode> neighbours)
         {
             Vec = vec;
             //CalculateNeighbours = calculateNeighbours;
-            Ph = physic;
+            //Ph = physic;
             Neighbours = neighbours;
         }
 
