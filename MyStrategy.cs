@@ -19,6 +19,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         // Global variables
         private VectorD NextPoint = new VectorD(4000-250, 250);
 
+        BonusManager bonusManager = new BonusManager();
+
         // For one move variables
         Wizard self; World world; Game game; Move move;
         private CachedResources cached;
@@ -44,7 +46,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             public static readonly double fdb = 110;
             public static readonly double fdbf = 110;
 
-            public static VectorD BaseOrigin = new VectorD(250, 4000-250);
+            public static readonly VectorD BaseOrigin = new VectorD(250, 4000-250);
+            public static readonly VectorD[] BonusesOrigin = { new VectorD(1200, 1200), new VectorD(2800, 2800) };
         }
 
         /***
@@ -162,7 +165,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 else
                 {
                     distance -= 10.0;
-                    task.Cost = 1100;
+                    //task.Cost = 1100;
                 }
                 
                 task.Target = new VectorD(enemy) + direction * distance;
@@ -173,7 +176,25 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         private void CalulatePickUpBonuses()
         {
-            
+            if (!bonusManager.MayBeBonus)
+                return;
+
+            var selfVec = new VectorD(self);
+
+            var nearestBonus = Const.BonusesOrigin.Min(d => (d - selfVec).SqLength);
+
+            if ((nearestBonus - selfVec).Length <= game.WizardVisionRange)
+            {
+                var bonusExists = cached.Bonuses.Any(bonus => (new VectorD(bonus) - nearestBonus).Length <= 5);
+
+                if (!bonusExists)
+                {
+                    bonusManager.MayBeBonus = false;
+                    return;
+                }
+            }
+
+            AddTask(new Task(TaskType.MoveTo) {Cost = 6000, Target = nearestBonus});
         }
 
         private void RunToMidlle()
@@ -183,37 +204,38 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         public void RandomRun()
         {
-            var path = physic.FindPathTo(NextPoint);
-
-//            if (path == null || path.PathLength <= 5)
-//            {
-//                NextPoint = NextPoint == new VectorD(2000, 300) ? new VectorD(500, 800) : new VectorD(2000, 300);
-//                path = physic.FindPathTo(NextPoint);
-//            }
-
-            if (path == null)
-            {
-                return;
-            }
-
-            var pa = path.Reverse().ToArray();
+            var target = CalculatePathToTarget(NextPoint);
             
-            var target = pa.Length > 1 ? physic.GetPointFromCellLocal(pa[1].LastStep.Vec) : NextPoint;
-
-#if QDEBUG
-            foreach (var ppp in path.Reverse())
-            {
-                var pp = physic.GetPointFromCellLocal(ppp.LastStep.Vec);
-                vc.FillCircle(pp.X, pp.Y, 4.0f, 0, 0, 1);
-            }
-#endif
-
             var task = new Task();
             
             SetRunToPoint(task.Movement, target);
             //task.Movement.Action = ActionType.Staff;
 
             moveTasks.Add(task);
+        }
+
+        private VectorD CalculatePathToTarget(VectorD targetPoint)
+        {
+            var path = physic.FindPathTo(targetPoint);
+            var result = NextPoint;
+
+            if (path != null)
+            {
+                var pa = path.Reverse().ToArray();
+
+                if (pa.Length > 1)
+                    result = physic.GetPointFromCellLocal(pa[1].LastStep.Vec);
+
+#if QDEBUG
+                foreach (var ppp in path.Reverse())
+                {
+                    var pp = physic.GetPointFromCellLocal(ppp.LastStep.Vec);
+                    vc.FillCircle(pp.X, pp.Y, 4.0f, 0, 0, 1);
+                }
+#endif
+            }
+
+            return result;
         }
 
         private void SetRunToPoint(Move move, VectorD target, bool changeTurn = true)
@@ -271,7 +293,9 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             if (bestTask.Type == TaskType.MoveTo)
             {
-                SetRunToPoint(move, bestTask.Target);
+                var target = CalculatePathToTarget(bestTask.Target);
+
+                SetRunToPoint(move, target);
             }
             else if (bestTask.Type == TaskType.BackTrack)
             {
@@ -313,6 +337,9 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             physic = new Physic(self, world, game, move, cached);
 
             moveTasks = new List<Task>();
+
+            //
+            bonusManager.WorldTick(world);
 
             // Dirty hacks
             AStar.SavedVectors = AStar.ToSaveVectors;
@@ -459,10 +486,23 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         {
             foreach (var unit in candidates)
             {
-                if (unit.Faction == wizard.Faction)
+                if (unit.Faction == wizard.Faction || unit.Faction == Faction.Neutral)
                     continue;
 
                 enemies.Add(unit);
+            }
+        }
+    }
+
+    public class BonusManager
+    {
+        public bool MayBeBonus { get; set; } = false;
+
+        public void WorldTick(World world)
+        {
+            if (world.TickIndex > 0 && world.TickIndex % 2500 == 0)
+            {
+                MayBeBonus = true;
             }
         }
     }
@@ -1692,6 +1732,104 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             my.SkillToLearn = from.SkillToLearn;
             my.Messages = from.Messages;
             my.StatusTargetId = from.StatusTargetId;
+        }
+
+        public static TSource Max<TSource, TComparer>(this IEnumerable<TSource> source, Func<TSource, TComparer> mappingFunc)
+        {
+            Comparer<TComparer> comparer = Comparer<TComparer>.Default;
+
+            TSource value = default(TSource);
+            TComparer mvalue = default(TComparer);
+
+            if (value == null)
+            {
+                foreach (TSource x in source)
+                {
+                    var m = mappingFunc(x);
+
+                    if (x != null && m != null && (value == null || comparer.Compare(m, mvalue) > 0))
+                    {
+                        value = x;
+                        mvalue = m;
+                    }
+                }
+                return value;
+            }
+            else
+            {
+                bool hasValue = false;
+                foreach (TSource x in source)
+                {
+                    var m = mappingFunc(x);
+
+                    if (hasValue)
+                    {
+                        if (comparer.Compare(m, mvalue) > 0)
+                        {
+                            value = x;
+                            mvalue = m;
+                        }
+                    }
+                    else
+                    {
+                        value = x;
+                        mvalue = m;
+                        hasValue = true;
+                    }
+                }
+                if (hasValue) return value;
+
+                throw new Exception("No elements.");
+            }
+        }
+
+        public static TSource Min<TSource, TComparer>(this IEnumerable<TSource> source, Func<TSource, TComparer> mappingFunc)
+        {
+            Comparer<TComparer> comparer = Comparer<TComparer>.Default;
+
+            TSource value = default(TSource);
+            TComparer mvalue = default(TComparer);
+
+            if (value == null)
+            {
+                foreach (TSource x in source)
+                {
+                    var m = mappingFunc(x);
+
+                    if (x != null && m != null && (value == null || comparer.Compare(m, mvalue) < 0))
+                    {
+                        value = x;
+                        mvalue = m;
+                    }
+                }
+                return value;
+            }
+            else
+            {
+                bool hasValue = false;
+                foreach (TSource x in source)
+                {
+                    var m = mappingFunc(x);
+
+                    if (hasValue)
+                    {
+                        if (comparer.Compare(m, mvalue) < 0)
+                        {
+                            value = x;
+                            mvalue = m;
+                        }
+                    }
+                    else
+                    {
+                        value = x;
+                        mvalue = m;
+                        hasValue = true;
+                    }
+                }
+                if (hasValue) return value;
+
+                throw new Exception("No elements.");
+            }
         }
     }
 }
