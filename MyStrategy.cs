@@ -20,6 +20,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
         private VectorD NextPoint = new VectorD(4000-250, 250);
 
         BonusManager bonusManager = new BonusManager();
+        private int nextSkillToLearn = 0;
 
         // For one move variables
         Wizard self; World world; Game game; Move move;
@@ -36,11 +37,12 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             public static readonly double COST_ENEMY_ATTACK = 4000;
             public static readonly double ENEMY_ATTACK_VOLATILE = 2000;
             public static readonly double ATTACK_ENEMY_RADIUS_PART = 0.5;
+            public static readonly double ATTACK_ENEMY_RADIUS_PART_BUILDING = 0.95;
 
-            public static readonly double COST_ENEMY_ATTACK_PRE = 2500;
+            public static readonly double COST_ENEMY_ATTACK_PRE = 1500;
             public static readonly double ENEMY_ATTACK_VOLATILE_PRE = 500;
 
-            public static readonly double CONSIDER_ATTACK_DISTANCE = 70;
+            public static readonly double CONSIDER_ATTACK_DISTANCE = 150;
             public static readonly double fddfb = 110;
             public static readonly double fdbfdb = 110;
             public static readonly double fdb = 110;
@@ -48,13 +50,28 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             public static readonly VectorD BaseOrigin = new VectorD(250, 4000-250);
             public static readonly VectorD[] BonusesOrigin = { new VectorD(1200, 1200), new VectorD(2800, 2800) };
+
+            public static readonly SkillType[] SkillsToLearn =
+            {
+                SkillType.RangeBonusPassive1, SkillType.RangeBonusAura1,
+                SkillType.RangeBonusPassive2, SkillType.RangeBonusAura2,
+                SkillType.AdvancedMagicMissile,
+
+                SkillType.MagicalDamageAbsorptionPassive1, SkillType.MagicalDamageAbsorptionAura1,
+                SkillType.MagicalDamageAbsorptionPassive2, SkillType.MagicalDamageAbsorptionAura2,
+
+                SkillType.MagicalDamageBonusPassive1, SkillType.MagicalDamageBonusAura1,
+                SkillType.MagicalDamageBonusPassive2, SkillType.MagicalDamageBonusAura2
+            };
         }
 
         /***
          * 
          * Move to point = 1 000
          * 
-         * Attack 5000 +- 2000, Wizard: 6000-12000
+         * Backtrack: 1500-2000
+         * Towers: 2000-3000
+         * Attack 4000-6000, Wizard: 8000-12000
          * 
          * Low HP go back ~ 10 000
          * 
@@ -67,8 +84,6 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             CalulatePickUpBonuses();
 
             RunToMidlle();
-
-            RandomRun();
         }
 
         public void CalculateLowHpStrategy()
@@ -93,7 +108,9 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 {
                     foreach (var enemy in cached.Enemies)
                     {
-                        var distanceToEnemy = self.GetDistanceTo(enemy) - enemy.Radius * Const.ATTACK_ENEMY_RADIUS_PART;
+                        var radiusPart = enemy is Building ? Const.ATTACK_ENEMY_RADIUS_PART_BUILDING : Const.ATTACK_ENEMY_RADIUS_PART;
+
+                        var distanceToEnemy = self.GetDistanceTo(enemy) - enemy.Radius * radiusPart;
                         if (distanceToEnemy > self.CastRange)
                             continue;
 
@@ -107,7 +124,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                         {
                             task.Movement.Action = ActionType.MagicMissile;
                             task.Movement.CastAngle = angle;
-                            task.Movement.MinCastDistance = (distanceToEnemy - enemy.Radius * (1 - Const.ATTACK_ENEMY_RADIUS_PART) + game.MagicMissileRadius);
+                            task.Movement.MinCastDistance = (distanceToEnemy - enemy.Radius * (1 - radiusPart) + game.MagicMissileRadius);
 
                             task.Cost = Const.COST_ENEMY_ATTACK +
                                         (1 - (double) enemy.Life/enemy.MaxLife)*Const.ENEMY_ATTACK_VOLATILE;
@@ -123,7 +140,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                         }
                         else if (enemy is Building)
                         {
-                            task.Cost *= 0.33;
+                            task.Cost *= 0.5;
                         }
 
                         AddTask(task);
@@ -155,16 +172,19 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
                 // Calculate next point
                 var direction = (Const.BaseOrigin - new VectorD(enemy)).Normalize;
-                var distance = enemy.Radius * Const.ATTACK_ENEMY_RADIUS_PART + self.CastRange;
+                var radiusPart = enemy is Building ? Const.ATTACK_ENEMY_RADIUS_PART_BUILDING : Const.ATTACK_ENEMY_RADIUS_PART;
+                var attackRange = Math.Max(self.CastRange, GetAttackRange(enemy));
+                var distance = enemy.Radius * radiusPart + attackRange;
                 var tickDelay = Math.Max(self.RemainingActionCooldownTicks, cached.RemainingCooldownTicksByAction[(int)ActionType.MagicMissile]);
 
-                if (tickDelay > 0)
+                if (tickDelay - 1 > 0)
                 {
-                    distance += Math.Min(10.0, tickDelay * 3);
+                    distance += Math.Min(10.0, (tickDelay-1) * 3);
                 }
                 else
                 {
                     distance -= 10.0;
+                    distance -= Math.Max(0, GetAttackRange(enemy) - self.CastRange);
                     //task.Cost = 1100;
                 }
                 
@@ -176,42 +196,33 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         private void CalulatePickUpBonuses()
         {
-            if (!bonusManager.MayBeBonus)
-                return;
-
-            var selfVec = new VectorD(self);
-
-            var nearestBonus = Const.BonusesOrigin.Min(d => (d - selfVec).SqLength);
-
-            if ((nearestBonus - selfVec).Length <= game.WizardVisionRange)
+            while (bonusManager.MayBeBonus)
             {
-                var bonusExists = cached.Bonuses.Any(bonus => (new VectorD(bonus) - nearestBonus).Length <= 5);
+                var selfVec = new VectorD(self);
 
-                if (!bonusExists)
+                var nearestBonus = bonusManager.Bonuses
+                    .Where(b => b.Avaliable)
+                    .Min(b => (b.Origin - selfVec).SqLength);
+
+                if ((nearestBonus.Origin - selfVec).Length <= game.WizardVisionRange)
                 {
-                    bonusManager.MayBeBonus = false;
-                    return;
-                }
-            }
+                    var bonusExists = cached.Bonuses.Any(bonus => (new VectorD(bonus) - nearestBonus.Origin).Length <= 5);
 
-            AddTask(new Task(TaskType.MoveTo) {Cost = 6000, Target = nearestBonus});
+                    if (!bonusExists)
+                    {
+                        nearestBonus.Avaliable = false;
+                        break;
+                    }
+                }
+
+                AddTask(new Task(TaskType.MoveTo) {Cost = 3500, Target = nearestBonus.Origin});
+                return;
+            }
         }
 
         private void RunToMidlle()
         {
-            
-        }
-
-        public void RandomRun()
-        {
-            var target = CalculatePathToTarget(NextPoint);
-            
-            var task = new Task();
-            
-            SetRunToPoint(task.Movement, target);
-            //task.Movement.Action = ActionType.Staff;
-
-            moveTasks.Add(task);
+            AddTask(new Task(TaskType.MoveTo) {Target = NextPoint});
         }
 
         private VectorD CalculatePathToTarget(VectorD targetPoint)
@@ -227,7 +238,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                     result = physic.GetPointFromCellLocal(pa[1].LastStep.Vec);
 
 #if QDEBUG
-                foreach (var ppp in path.Reverse())
+                foreach (var ppp in pa)
                 {
                     var pp = physic.GetPointFromCellLocal(ppp.LastStep.Vec);
                     vc.FillCircle(pp.X, pp.Y, 4.0f, 0, 0, 1);
@@ -236,6 +247,26 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             }
 
             return result;
+        }
+
+        private double GetAttackRange(LivingUnit unit)
+        {
+            if (unit is Wizard)
+            {
+                return (unit as Wizard).CastRange;
+            }
+            if (unit is Building)
+            {
+                return (unit as Building).AttackRange;
+            }
+            if (unit is Minion)
+            {
+                return (unit as Minion).Type == MinionType.OrcWoodcutter
+                    ? game.OrcWoodcutterAttackRange
+                    : game.FetishBlowdartAttackRange;
+            }
+
+            return 0;
         }
 
         private void SetRunToPoint(Move move, VectorD target, bool changeTurn = true)
@@ -299,13 +330,28 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             }
             else if (bestTask.Type == TaskType.BackTrack)
             {
+                var target = CalculatePathToTarget(bestTask.Target);
+
                 move.CopyFrom(bestTask.Movement);
-                SetRunToPoint(move, bestTask.Target, false);
+                SetRunToPoint(move, target, false);
             }
             else
             {
                 move.CopyFrom(bestTask.Movement);
             }
+
+            LearnSkills();
+        }
+
+        private void LearnSkills()
+        {
+            if (nextSkillToLearn >= Const.SkillsToLearn.Length)
+                return;
+
+            if (self.Skills.Contains(Const.SkillsToLearn[nextSkillToLearn]))
+                nextSkillToLearn++;
+
+            move.SkillToLearn = Const.SkillsToLearn[nextSkillToLearn];
         }
 
         public void Move(Wizard self, World world, Game game, Move move)
@@ -496,14 +542,42 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
     public class BonusManager
     {
-        public bool MayBeBonus { get; set; } = false;
+        public QBonus[] Bonuses { get; } = {
+            new QBonus(MyStrategy.Const.BonusesOrigin[0]),
+            new QBonus(MyStrategy.Const.BonusesOrigin[1])
+        };
+        
+        public bool MayBeBonus => Bonuses.Any(bonus => bonus.Avaliable);
+        public QBonus TargetBonus { get; set; }
 
         public void WorldTick(World world)
         {
             if (world.TickIndex > 0 && world.TickIndex % 2500 == 0)
             {
-                MayBeBonus = true;
+                foreach (var bonus in Bonuses)
+                    bonus.Avaliable = true;
+
+                TargetBonus = null;
             }
+
+            if (world.TickIndex > 0 && world.TickIndex % 2500 == 1000)
+            {
+                foreach (var bonus in Bonuses)
+                    bonus.Avaliable = false;
+
+                TargetBonus = null;
+            }
+        }
+    }
+
+    public class QBonus
+    {
+        public VectorD Origin { get; }
+        public bool Avaliable { get; set; } = false;
+
+        public QBonus(VectorD origin)
+        {
+            Origin = origin;
         }
     }
 
