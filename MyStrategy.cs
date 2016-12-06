@@ -18,15 +18,25 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         // Global variables
         private VectorD NextPoint = new VectorD(4000-250, 250);
+        private LaneType MyLane = LaneType.Middle;
 
         BonusManager bonusManager = new BonusManager();
         private int nextSkillToLearn = 0;
+
+        private int previousTickIndex = -1;
+
+        // Generated
+        private bool initializedGlobalStratagy = false;
+        private Dictionary<LaneType, VectorD[]> waypointsByLane;
 
         // For one move variables
         Wizard self; World world; Game game; Move move;
         private CachedResources cached;
         public static Physic physic;
         private List<Task> moveTasks;
+
+        private VectorD nextWaypoint;
+        private VectorD previousWaypoint;
 
         // Consts:
         public class Const
@@ -58,7 +68,9 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             public static readonly double fdb = 110;
             public static readonly double fdbf = 110;
 
-            public static readonly VectorD BaseOrigin = new VectorD(250, 4000-250);
+            public static readonly double WAYPOINT_RADIUS = 100.0D;
+
+            //public static readonly VectorD BaseOrigin = new VectorD(250, 4000-250);
             public static readonly VectorD[] BonusesOrigin = { new VectorD(1200, 1200), new VectorD(2800, 2800) };
 
             public static readonly SkillType[] SkillsToLearn =
@@ -106,7 +118,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             CalulatePickUpBonuses();
 
-            RunToMidlle();
+            RunToNextWaypoint();
         }
 
         public void CalculateLowHpStrategy()
@@ -116,7 +128,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 var task = new Task(TaskType.MoveTo);
                 task.Cost = (self.MaxLife - self.Life) * Const.LOW_HP_TASK_MUL;
 
-                task.Target = Const.BaseOrigin;
+                task.Target = previousWaypoint;
 
                 AddTask(task);
             }
@@ -157,7 +169,10 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                     }
                     else if (enemy is Building)
                     {
-                        task.Cost *= 0.75;
+                        if (((Building)enemy).Type != BuildingType.FactionBase)
+                            task.Cost *= 0.75;
+                        else
+                            task.Cost *= 1.5;
                     }
 
                     AddTask(task);
@@ -237,7 +252,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 }
 
                 // Calculate next point
-                var direction = (Const.BaseOrigin - new VectorD(enemy)).Normalize;
+                var direction = (previousWaypoint - new VectorD(enemy)).Normalize;
                 var radiusPart = enemy is Building ? Const.ATTACK_MISSILE_RADIUS_PART_BUILDING : Const.ATTACK_MISSILE_RADIUS_PART;
                 var attackRange = Math.Max(self.CastRange, GetAttackRange(enemy));
                 var distance = enemy.Radius * radiusPart + attackRange;
@@ -255,6 +270,7 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                 }
                 
                 task.Target = new VectorD(enemy) + direction * distance;
+                physic.ClampVectorDToMap(task.Target);
 
                 AddTask(task);
             }
@@ -279,13 +295,22 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
                     .Where(b => b.Avaliable)
                     .Min(b => (b.Origin - selfVec).SqLength);
 
-                if ((nearestBonus.Origin - selfVec).Length <= game.WizardVisionRange)
+                //if ((nearestBonus.Origin - selfVec).Length <= game.WizardVisionRange)
+                if (InRangeOfAnyTeammate(nearestBonus.Origin))
                 {
                     var bonusExists = cached.Bonuses.Any(bonus => (new VectorD(bonus) - nearestBonus.Origin).Length <= 5);
 
                     if (!bonusExists && nearestBonus.AvaliableTick <= world.TickIndex)
                     {
-                        nearestBonus.Avaliable = false;
+                        if (MyLane == LaneType.Middle)
+                        {
+                            nearestBonus.Avaliable = false;
+                        }
+                        else
+                        {
+                            foreach (var b in bonusManager.Bonuses)
+                                b.Avaliable = false;
+                        }
                         break;
                     }
                 }
@@ -295,10 +320,30 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
             }
         }
 
-        private void RunToMidlle()
+        private void RunToNextWaypoint()
         {
             if (world.TickIndex >= 100)
-                AddTask(new Task(TaskType.MoveTo) {Target = NextPoint});
+                AddTask(new Task(TaskType.MoveTo) {Target = nextWaypoint});
+        }
+
+        private bool InRangeOfAnyTeammate(VectorD unitOrigin)
+        {
+            //var unitOrigin = new VectorD(unit);
+
+            foreach (var wizard in cached.Wizards)
+            {
+                if (wizard.Faction != self.Faction)
+                    continue;
+
+                var wizardOrigin = new VectorD(wizard);
+
+                if ((unitOrigin - wizardOrigin).Length <= game.WizardVisionRange)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private VectorD CalculatePathToTarget(VectorD targetPoint)
@@ -444,10 +489,207 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             for (int i = 0; i < 4; i++)
             {
-                msgs[i] = new Message(i < 2 ? LaneType.Top : LaneType.Bottom, null, new byte[0]);
+                msgs[i] = new Message(i < 2 ? LaneType.Top : LaneType.Bottom, SkillType.MovementBonusFactorPassive2, new byte[0]);
             }
 
             move.Messages = msgs;
+        }
+
+        private void SelectNextLane()
+        {
+            var messageFromMe = self.Messages?.FirstOrDefault(m => m.SkillToLearn == SkillType.MovementBonusFactorPassive2);
+
+            if (messageFromMe != null)
+            {
+                MyLane = messageFromMe.Lane;
+                return;
+            }
+
+            // Find wizard lines
+            int[] playersOnLines = new int[3];
+
+            foreach (var wizard in cached.Wizards)
+            {
+                if (wizard.Faction != self.Faction)
+                    continue;
+                if (wizard.IsMe)
+                    continue;
+
+                var wizardOrigin = new VectorD(wizard);
+
+                if ((wizardOrigin.X <= 400 && (4000 - wizardOrigin.Y) >= wizardOrigin.X) ||
+                    (wizardOrigin.Y <= 400))
+                {
+                    playersOnLines[(int)LaneType.Top]++;
+                }
+                else if ((wizardOrigin.Y >= 4000 - 400 && (4000 - wizardOrigin.Y) <= wizardOrigin.X) ||
+                         (wizardOrigin.X >= 4000 - 400))
+                {
+                    playersOnLines[(int)LaneType.Bottom]++;
+                }
+                else
+                {
+                    playersOnLines[(int)LaneType.Middle]++;
+                }
+            }
+
+            var minPlayersOnLine = playersOnLines.Min();
+
+            if (playersOnLines[(int) LaneType.Middle] == minPlayersOnLine)
+            {
+                MyLane = LaneType.Middle;
+                return;
+            }
+
+            for (int i = 0; i < playersOnLines.Length; i++)
+            {
+                if (playersOnLines[i] == minPlayersOnLine)
+                {
+                    MyLane = (LaneType) i;
+                    return;
+                }
+            }
+        }
+
+        private void CalculateSpawn()
+        {
+            // Spawned
+            if (world.TickIndex == 100)
+            {
+                SelectNextLane();
+            }
+
+            if (world.TickIndex - previousTickIndex > game.FrozenDurationTicks + 1)
+            {
+                SelectNextLane();
+            }
+
+            previousTickIndex = world.TickIndex;
+        }
+
+        private void InitializeStrategy()
+        {
+            if (initializedGlobalStratagy)
+                return;
+
+            initializedGlobalStratagy = true;
+
+            double mapSize = game.MapSize;
+
+            waypointsByLane = new Dictionary<LaneType, VectorD[]>
+            {
+                {
+                    LaneType.Middle, new VectorD[]
+                    {
+                        new VectorD(100.0D, mapSize - 100.0D),
+                        //new VectorD(200.0D, mapSize - 200.0D),
+                        //new VectorD(300.0D, mapSize - 300.0D),
+                        //new VectorD(400.0D, mapSize - 400.0D),
+                        //new VectorD(500.0D, mapSize - 500.0D),
+                        new VectorD(600.0D, mapSize - 600.0D),
+                        new VectorD(700.0D, mapSize - 700.0D),
+                        new VectorD(800.0D, mapSize - 800.0D),
+                        new VectorD(1200.0D, mapSize - 1200.0D),
+                        new VectorD(1600.0D, mapSize - 1600.0D),
+                        new VectorD(2000.0D, mapSize - 2000.0D),
+                        new VectorD(2400.0D, mapSize - 2400.0D),
+                        new VectorD(2800.0D, mapSize - 2800.0D),
+                        new VectorD(3200.0D, mapSize - 3200.0D),
+                        new VectorD(3600.0D, mapSize - 3600.0D),
+                        new VectorD(mapSize - 200.0D, 200.0D)
+                    }
+                },
+                {
+                    LaneType.Top, new VectorD[]
+                    {
+                        //new VectorD(100.0D, mapSize - 100.0D),
+                        new VectorD(150.0D, mapSize - 200.0D),
+                        new VectorD(200.0D, mapSize - 400.0D),
+                        new VectorD(200.0D, mapSize - 800.0D),
+                        new VectorD(200.0D, mapSize*0.75D),
+                        new VectorD(200.0D, mapSize*0.5D),
+                        new VectorD(200.0D, mapSize*0.25D),
+                        new VectorD(200.0D, 200.0D),
+                        new VectorD(mapSize*0.25D, 200.0D),
+                        new VectorD(mapSize*0.5D, 200.0D),
+                        new VectorD(mapSize*0.75D, 200.0D),
+                        new VectorD(mapSize - 200.0D, 200.0D)
+                    }
+                },
+                {
+                    LaneType.Bottom, new VectorD[]
+                    {
+                        //new VectorD(100.0D, mapSize - 100.0D),
+                        new VectorD(200.0D, mapSize - 150.0D),
+                        new VectorD(400.0D, mapSize - 200.0D),
+                        new VectorD(800.0D, mapSize - 200.0D),
+                        new VectorD(mapSize*0.25D, mapSize - 200.0D),
+                        new VectorD(mapSize*0.5D, mapSize - 200.0D),
+                        new VectorD(mapSize*0.75D, mapSize - 200.0D),
+                        new VectorD(mapSize - 200.0D, mapSize - 200.0D),
+                        new VectorD(mapSize - 200.0D, mapSize*0.75D),
+                        new VectorD(mapSize - 200.0D, mapSize*0.5D),
+                        new VectorD(mapSize - 200.0D, mapSize*0.25D),
+                        new VectorD(mapSize - 200.0D, 200.0D)
+                    }
+                }
+            };
+        }
+
+        private VectorD CalcNextWaypoint()
+        {
+            var waypoints = GetCurrentWaypoints();
+            var selfVector = new VectorD(self);
+
+            int lastWaypointIndex = waypoints.Length - 1;
+            VectorD lastWaypoint = waypoints[lastWaypointIndex];
+
+            for (int waypointIndex = 0; waypointIndex < lastWaypointIndex; ++waypointIndex)
+            {
+                VectorD waypoint = waypoints[waypointIndex];
+
+                if ((waypoint - selfVector).Length <= Const.WAYPOINT_RADIUS)
+                {
+                    return waypoints[waypointIndex + 1];
+                }
+
+                if ((lastWaypoint - waypoint).Length < (lastWaypoint - selfVector).Length)
+                {
+                    return waypoint;
+                }
+            }
+
+            return lastWaypoint;
+        }
+
+        private VectorD CalcPreviousWaypoint()
+        {
+            var waypoints = GetCurrentWaypoints();
+            var selfVector = new VectorD(self);
+
+            VectorD firstWaypoint = waypoints[0];
+
+            for (int waypointIndex = waypoints.Length - 1; waypointIndex > 0; --waypointIndex)
+            {
+                VectorD waypoint = waypoints[waypointIndex];
+
+                if ((waypoint - selfVector).Length <= Const.WAYPOINT_RADIUS)
+                {
+                    return waypoints[waypointIndex - 1];
+                }
+
+                if ((firstWaypoint - waypoint).Length < (firstWaypoint - selfVector).Length)
+                {
+                    return waypoint;
+                }
+            }
+
+            return firstWaypoint;
+        }
+
+        private VectorD[] GetCurrentWaypoints()
+        {
+            return waypointsByLane[MyLane];
         }
 
         public void Move(Wizard self, World world, Game game, Move move)
@@ -476,12 +718,22 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
             cached = new CachedResources(self, world);
 
+            // Global
+            InitializeStrategy();
+            // Global end
+
             physic = new Physic(self, world, game, move, cached);
 
             moveTasks = new List<Task>();
 
+            previousWaypoint = CalcPreviousWaypoint();
+            nextWaypoint = CalcNextWaypoint();
+
             //
             bonusManager.WorldTick(world);
+
+            // 
+            CalculateSpawn();
 
             // Dirty hacks
         }
@@ -840,6 +1092,8 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         public Path<QNode> FindPath(VectorD start, VectorD end)
         {
+            ClampVectorDToMap(end);
+
             var globalDirection = end - start;
             
             VectorD nextLocalEndpoint = end;
@@ -922,6 +1176,19 @@ namespace Com.CodeGame.CodeWizards2016.DevKit.CSharpCgdk {
 
         //    return shortestPath;
         //}
+
+        public void ClampVectorDToMap(VectorD vec)
+        {
+            if (vec.X < 0)
+                vec.X = 0;
+            else if (vec.X > 4000)
+                vec.X = 4000;
+
+            if (vec.Y < 0)
+                vec.Y = 0;
+            else if (vec.Y > 4000)
+                vec.Y = 4000;
+        }
 
         public QNode GetNodeGlobal(Vector cell)
         {
